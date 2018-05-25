@@ -1,0 +1,478 @@
+#include "mainwindow.h"
+#include "ui_mainwindow.h"
+
+int threshold_empty_low= 3000;
+int threshold_empty_high= 50000;
+
+std::vector<std::vector <int>> ques_page ;
+
+
+QZXing decoder;
+
+Mat element = getStructuringElement( MORPH_ELLIPSE,
+                                     Size( 5, 5 ));
+
+std::string createRecurciveDirectory(QString path) {
+    QStringList strs = path.split('/') ;
+    QString outpath = "" ;
+    for (uint idx = 0; idx < strs.size(); ++idx) {
+        outpath+=strs[idx] +"/" ;
+        if(!QDir(outpath).exists()) {
+            QDir().mkdir(outpath);
+        }
+    }
+    return outpath.toStdString() ;
+
+
+}
+
+
+MainWindow::MainWindow(QWidget *parent) :
+    QMainWindow(parent),
+    ui(new Ui::MainWindow)
+{
+    ui->setupUi(this);
+    std::vector <int> temp ;
+    temp.push_back(0);
+
+    ques_page.push_back(temp); //0
+    temp.clear();
+    temp.push_back(0);temp.push_back(2); temp.push_back(1); temp.push_back(1);temp.push_back(2); temp.push_back(1); temp.push_back(1); temp.push_back(1) ; temp.push_back(2);
+    ques_page.push_back(temp); //1
+    temp.clear();
+    temp.push_back(0);temp.push_back(2);
+    ques_page.push_back(temp); //2
+    ques_page.push_back(temp); //3
+    ques_page.push_back(temp); //4
+    temp.clear();
+    temp.push_back(0);temp.push_back(2);temp.push_back(0);temp.push_back(0);temp.push_back(1);temp.push_back(0);temp.push_back(2);
+    ques_page.push_back(temp); //5
+    ques_page.push_back(temp); //6
+    temp.clear();
+    temp.push_back(0);temp.push_back(1); temp.push_back(2); temp.push_back(1);temp.push_back(1);
+    ques_page.push_back(temp); //7
+    temp.clear();
+    temp.push_back(0);temp.push_back(1); temp.push_back(1); temp.push_back(1);
+    ques_page.push_back(temp); //8
+    temp.clear();
+    temp.push_back(0);temp.push_back(1); temp.push_back(1); temp.push_back(1);temp.push_back(1);temp.push_back(1);temp.push_back(1);temp.push_back(1);temp.push_back(1);temp.push_back(1);temp.push_back(1);
+    ques_page.push_back(temp); //9
+    temp.clear();
+    temp.push_back(0);temp.push_back(1); temp.push_back(1); temp.push_back(1);temp.push_back(1); temp.push_back(1); temp.push_back(1);
+    ques_page.push_back(temp); //10
+
+    setting_ = new setting();
+
+    ui->lineEdit_out->setText(setting_->get_out_path());
+    ui->lineEdit_removed->setText(setting_->get_removed_path());
+
+    createRecurciveDirectory(setting_->get_out_path()) ;
+    createRecurciveDirectory(setting_->get_removed_path()) ;
+
+}
+
+MainWindow::~MainWindow()
+{
+    delete ui;
+}
+
+void MainWindow::on_pushButton_clicked()
+{
+    createRecurciveDirectory(setting_->get_out_path()) ;
+
+    QString dir = QFileDialog::getExistingDirectory(this, tr("Open Directory"),
+                                                    setting_->get_open_path(),
+                                                    QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+
+    if(dir!="") {
+        setting_->set_open_path(dir) ;
+        //        decoder.setDecoder(QZXing::DecoderFormat_QR_CODE | QZXing::DecoderFormat_CODE_128 );
+        decoder.setDecoder(QZXing::DecoderFormat_QR_CODE  );
+        //                decoder.setDecoder(QZXing::DecoderFormat_None );
+
+
+        vector<cv::String> fn;
+        glob(dir.toStdString() +"/*.jpg", fn, false);
+        size_t count = fn.size();
+        ui->progressBar->setMaximum((int) count-1);
+        if (ui->checkBoxMultiThread->isChecked()) {
+            uint num_threads = std::thread::hardware_concurrency();
+            size_t filecounter ;
+            for (filecounter = 0; filecounter<count; filecounter+=num_threads){
+                if(count- filecounter <num_threads || !running)
+                    break ;
+                std::thread threads[num_threads];
+                for (int t=0; t<num_threads; ++t)
+                    threads[t] = std::thread(&OMRProcess::ProcessImage,this,fn[filecounter+t],pathOrginal,pathProcessed,pathError,t);
+                for (auto& th : threads) th.join();
+                ui->labelStatus->setText("تعداد کل فایل ها: "+QString::number(count)+" , پردازش شده:"+QString::number(filecounter+num_threads)+" , باقی مانده:"+QString::number(count- filecounter-num_threads));
+                queryData() ;
+                ui->tableView->scrollToBottom();
+                QCoreApplication::processEvents();
+            }
+            int remainFiles = count-filecounter ;
+            if (remainFiles!=0 && running) {
+                std::thread threads[remainFiles];
+                for (int i=0; i<remainFiles; ++i)
+                    threads[i] = std::thread(&OMRProcess::ProcessImage,this,fn[filecounter+i],pathOrginal,pathProcessed,pathError,i);
+                for (auto& th : threads) th.join();
+                //                ui->labelStatus->setText("تعداد کل تصاویر:"+ QString(count) + " باقی مانده "+ QString(std::abs(count-i) ));
+                ui->labelStatus->setText("تعداد کل فایل ها: "+QString::number(count)+" , پردازش شده:"+QString::number(filecounter+remainFiles)+" , باقی مانده:"+QString::number(count- filecounter-remainFiles));
+                queryData() ;
+                ui->tableView->scrollToBottom();
+                QCoreApplication::processEvents();
+
+            }
+
+        }
+        else
+            for (size_t i=0; i<count; i++){
+                process_image(fn[i]);
+                ui->progressBar->setValue((int) i);
+                QCoreApplication::processEvents();
+
+            }
+        std::cout << error_counter << endl;
+        QMessageBox::information(this,"Result","All Files Procseed");
+    }
+}
+
+
+int detect_circle(Mat img)
+{
+
+
+
+    Mat gray;
+    img.copyTo(gray);
+    //    medianBlur(img, gray, 5);
+    vector<Vec3f> circles;
+
+    HoughCircles(gray, circles, CV_HOUGH_GRADIENT, 1,
+                 gray.rows/16, // change this value to detect circles with different distances to each other
+                 100, 30, 15, 30 // change the last two parameters
+                 // (min_radius & max_radius) to detect larger circles
+                 );
+    for( size_t i = 0; i < circles.size(); i++ )
+    {
+        Vec3i c = circles[i];
+        circle( img, Point(c[0], c[1]), c[2], Scalar(0,0,255), 3, 8);
+        circle( img, Point(c[0], c[1]), 2, Scalar(0,255,0), 3, 8);
+    }
+    std::cout << circles.size() << std::endl ;
+
+    cv::Mat resize ;
+    cv::resize(img,resize,cv::Size(600,1000));
+    imshow("detected circles", resize);
+    waitKey();
+
+    return 0;
+
+}
+
+QString MainWindow::read_bar(Mat img)
+{
+    Mat ROI;
+    QString bar_code ;
+    cv::Mat(img(cv::Rect(450,250,400,500))).copyTo(ROI);
+    //    cv::threshold(ROI,ROI,200,255,THRESH_BINARY) ;
+
+    bar_code = decoder.decodeImage(ASM::cvMatToQImage(ROI));
+    if (bar_code.size()!=0)
+        return bar_code ;
+
+    cv::Mat(img(cv::Rect(200,1600,500,400))).copyTo(ROI);
+    //    cv::threshold(ROI,ROI,200,255,THRESH_BINARY) ;
+
+    bar_code = decoder.decodeImage(ASM::cvMatToQImage(ROI));
+    if (bar_code.size()!=0)
+        return bar_code ;
+
+    return " " ;
+}
+
+float is_page_empty(Mat img)
+{
+    cv::Mat dilation_dst ,bin,ROI ;
+    cv::Mat(img(cv::Rect(100,900,2250,2050))).copyTo(ROI);
+    cv::threshold(ROI,bin,220,255,THRESH_BINARY_INV) ;
+
+    erode( bin, dilation_dst, element );
+    double sum2 = cv::sum(dilation_dst).val[0] ;
+    //    cv::Mat resized,resizedROI,resized_org ;
+    //    cv::resize(dilation_dst,resized,cv::Size(0,0),0.4,0.4) ;
+    //    cv::resize(bin,resizedROI,cv::Size(0,0),0.4,0.4) ;
+    //    cv::resize(ROI,resized_org,cv::Size(0,0),0.4,0.4) ;
+    //    cv::hconcat(resized,resizedROI,resized);
+    //    cv::hconcat(resized,resized_org,resized);
+    //    cv::putText(resized,std::to_string(sum2),cv::Point(300,300),2,5,cv::Scalar(100),2);
+    //    if(sum2 < threshold_empty_low) {
+    //        cv::putText(resized,"Empty",cv::Point(300,500),2,5,cv::Scalar(100),2);
+    //    }
+    //    cv::imshow("r",resized) ; cv::waitKey(0);
+    return sum2;
+    //    if(sum2 < threshold_empty) {
+    //        return true;
+
+    //    }
+
+    //    return false;
+
+}
+
+
+
+
+
+void MainWindow::on_pushButton_2_clicked()
+{
+
+
+    int omit_counter = 0 ;
+
+    QString source = QFileDialog::getExistingDirectory(this, tr("Open Directory"),
+                                                       setting_->get_open_path(),
+                                                       QFileDialog::ShowDirsOnly
+                                                       | QFileDialog::DontResolveSymlinks);
+    if(source!="") {
+        setting_->set_open_path(source);
+        QStringList strs;
+        QString in_path = source ;
+        in_path.split("/");
+
+        QString sessionID = strs.back() ;
+
+        QString out_put_path_omitted_pages_session = setting_->get_removed_path()  + sessionID +"/";
+        createRecurciveDirectory(out_put_path_omitted_pages_session) ;
+        QString out_put_path_omitted_pages_session_zero = out_put_path_omitted_pages_session  +  "Zero/";
+        createRecurciveDirectory(out_put_path_omitted_pages_session_zero) ;
+
+        QDir dirs( in_path );
+
+        dirs.setFilter( QDir::AllEntries | QDir::NoDotAndDotDot );
+
+        int total_files = dirs.count();
+
+
+        ui->progressBar->setMaximum(total_files-1);
+
+
+        QString out_put_path_session= setting_->get_removed_path()+"/" + sessionID + "/" ;
+        createRecurciveDirectory(out_put_path_session) ;
+
+
+        DIR *dir;
+        struct dirent *ent;
+        if ((dir = opendir (source.toStdString().c_str())) != NULL) {
+            int counter = 0 ;
+            while ((ent = readdir (dir)) != NULL) {
+                counter++ ;
+                ui->progressBar->setValue((int) counter);
+                QCoreApplication::processEvents();
+
+                QString candidID = ent->d_name ;
+                if(candidID !=".." && candidID !="." ) {
+
+
+                    QString  out_put_path_std = out_put_path_session + candidID + "/" ;
+                    createRecurciveDirectory(out_put_path_std) ;
+
+                    QString path_candid =  in_path + "/" + candidID + "/" ;
+
+                    DIR *dir_sub;
+                    struct dirent *ent_sub;
+                    if ((dir_sub = opendir (path_candid.toStdString().c_str())) != NULL) {
+                        while ((ent_sub = readdir (dir_sub)) != NULL) {
+                            QString ques_No=  ent_sub->d_name ;
+                            if(ques_No !=".." && ques_No !="." && ques_No.length()<3) {
+
+
+                                QString out_put_path_ques = out_put_path_std + ques_No + "/" ;
+                                createRecurciveDirectory(out_put_path_ques) ;
+
+                                int omit_page = ques_page.at(sessionID.toInt()).at( ques_No.toInt()) ;
+
+                                QString path_ques = path_candid + ques_No + "/" ;
+
+                                vector<cv::String> fn;
+                                glob(path_ques.toStdString() +"*.jpg", fn, false);
+
+                                size_t count = fn.size();
+
+                                for (size_t i=omit_page; i<count; i++){
+
+                                    Mat img = imread(fn[i], IMREAD_GRAYSCALE);
+                                    if(img.cols != 2496 || img.rows != 3520)
+                                    {
+                                        cv::resize(img,img,cv::Size(2496,3520)) ;
+                                    }
+
+                                    float empty_result = is_page_empty(img) ;
+
+                                    if(empty_result >= threshold_empty_high) {
+
+                                        QString out_put_path_file = out_put_path_ques + QString::number(i+omit_page) + ".jpg" ;
+
+                                        QFile::copy(QString::fromStdString(fn[i]),out_put_path_file);
+
+                                    }
+                                    else {
+                                        if(empty_result >= threshold_empty_low) {
+
+                                            QString file_name = out_put_path_omitted_pages_session +candidID +"-" + ques_No +"-" + QString::number(i+omit_page) + ".jpg" ;
+                                            QFile::copy(QString::fromStdString(fn[i]),file_name);
+                                        }
+                                        else {
+                                            QString file_name = out_put_path_omitted_pages_session_zero +candidID +"-" + ques_No +"-" + QString::number(i+omit_page) + ".jpg" ;
+                                            QFile::copy(QString::fromStdString(fn[i]),file_name);
+
+                                        }
+                                        omit_counter++ ;
+                                    }
+
+                                }
+                            }
+                        }
+                    }
+                    closedir (dir_sub);
+
+                }
+            }
+            closedir (dir);
+            std::cout << omit_counter << endl;
+
+            QMessageBox::information(this,"Result","All Files Procseed");
+        }
+
+    }
+}
+
+void MainWindow::on_pushButton_3_clicked()
+{
+    //    QString source = QFileDialog::getExistingDirectory(this, tr("Open Directory"),
+    //                                                "/home",
+    //                                                QFileDialog::ShowDirsOnly
+    //                                                | QFileDialog::DontResolveSymlinks);
+    //    if(source!="") {
+    //        vector<cv::String> fn;
+    //        glob(source.toStdString() +"/*.jpg", fn, false);
+
+    //        size_t count = fn.size();
+    //        ui->progressBar->setMaximum((int) count-1);
+
+    //        for (size_t i=0; i<count; i++){
+
+    //            Mat img = imread(fn[i], IMREAD_GRAYSCALE);
+    //            std::cout<< fn[i]<<std::endl ;
+    //            Mat gray_barcode ;
+    //            cv::Mat(img(cv::Rect(280,400,1500,600))).copyTo(gray_barcode);
+
+
+    ////            cv::threshold(gray_barcode,gray_barcode,250,255,THRESH_BINARY);
+
+    //            int width = gray_barcode.cols;
+    //            int height = gray_barcode.rows;
+    //            uchar *raw = (uchar *)gray_barcode.data;
+    //            // wrap image data
+    //            zbar::Image image_bar(width, height, "Y800", raw, width * height);
+    //            // scan the image for barcodes
+    //            int res = scanner.scan(image_bar);
+    //            // extract results
+    //            bool sucess = false ;
+    //            for(Image::SymbolIterator symbol = image_bar.symbol_begin();
+    //                symbol != image_bar.symbol_end();
+    //                ++symbol) {
+    //                vector<Point> vp;
+    //                // do something useful with results
+    //                cout << "decoded " << symbol->get_type_name() << " symbol ="  << symbol->get_data()  << endl;
+
+    //                std::string file_name ;
+
+    ////                file_name = out_path_file +"/"+ symbol->get_data() + ".jpg";
+    ////                cv::imwrite(file_name,image) ;
+    ////                sucess=true ;
+    //            }
+
+    ////            cv::imshow("sa",gray_barcode) ;cv::waitKey(0);exit(0);
+
+    //        }
+    //    }
+
+}
+
+
+
+void MainWindow::on_pushButton_out_clicked()
+{
+    QString source = QFileDialog::getExistingDirectory(this, tr("Open Directory"),
+                                                       setting_->get_open_path(),
+                                                       QFileDialog::ShowDirsOnly
+                                                       | QFileDialog::DontResolveSymlinks);
+    if(source!="") {
+        ui->lineEdit_out->setText(source);
+        setting_->set_out_path(source);
+
+    }
+}
+
+void MainWindow::on_pushButton_removed_clicked()
+{
+    QString source = QFileDialog::getExistingDirectory(this, tr("Open Directory"),
+                                                       setting_->get_open_path(),
+                                                       QFileDialog::ShowDirsOnly
+                                                       | QFileDialog::DontResolveSymlinks);
+    if(source!="") {
+        ui->lineEdit_removed->setText(source);
+        setting_->set_removed_path(source);
+    }
+}
+void MainWindow::process_image(cv::String image_path) {
+    QString candidID = "" ;
+    QString sessionID =  "";
+    QString qusNo =  "" ;
+    QString pageNo ="" ;
+    Mat img = imread(image_path, IMREAD_GRAYSCALE);
+    if(img.empty())
+    {
+        cout << "can not open " << image_path << endl;
+    }
+    if(img.cols != 2496 || img.rows != 3520)
+        cv::resize(img,img,cv::Size(2496,3520)) ;
+    QString barcode =  read_bar(img) ;
+    if(barcode==" ") { //error or empty
+        cv::Mat thr ;
+        cv::threshold(img,thr,100,255,THRESH_BINARY_INV);
+        double sum = cv::sum(thr).val[0] ;
+        if(sum >500000) {
+            if (qusNo=="0") return ;
+            error_counter+=1 ;
+            QString out_put_path_std = setting_->get_out_path() +"/"+ sessionID + "/" ;
+            createRecurciveDirectory(out_put_path_std) ;
+            out_put_path_std += "error/"  ;
+            createRecurciveDirectory(out_put_path_std) ;
+            out_put_path_std += QString::number(error_counter) ;
+            QFile::copy(QString::fromStdString(image_path),out_put_path_std+".jpg");
+        }
+    }
+    else {
+        QString qr_code = barcode ;
+        QStringList strs = qr_code.split("-") ;
+        candidID = strs[0] ;
+        sessionID = strs[1] ;
+        qusNo = strs[2] ;
+        pageNo = strs[3] ;
+        QString out_put_path_std = setting_->get_out_path() +"/"+ sessionID + "/" ;
+        createRecurciveDirectory(out_put_path_std) ;
+        out_put_path_std += candidID + "/" ;
+        createRecurciveDirectory(out_put_path_std) ;
+        if (qusNo!="0") {
+            out_put_path_std += qusNo + "/" ;
+            createRecurciveDirectory(out_put_path_std) ;
+            out_put_path_std += pageNo  ;
+        }
+        else {
+            out_put_path_std += candidID  ;
+        }
+        QFile::copy(QString::fromStdString(image_path),out_put_path_std+".jpg");
+    }
+}
